@@ -27,17 +27,28 @@ npm run dev
 ## 데이터 적재
 
 현재 DB에는 검증된 대표 인물 21명(seed_sample)만 들어 있다. 전체 명단 적재는
-일반 인터넷이 되는 로컬에서:
+일반 인터넷이 되는 로컬에서, 두 경로 중 하나로:
+
+**경로 A (권장) — 뉴스타파 CSV.** 생몰년·분야까지 포함된 구조화 데이터.
 
 ```bash
-# 1) 미리보기 (쓰기 없음) — 추출 수가 ~1,006명인지 확인
-node scripts/ingest_wiki_1006.mjs
-
-# 2) 실제 적재
+# https://data.newstapa.org 에서 "친일반민족행위자결정 1006명 명단" CSV 다운로드 후
+node scripts/ingest_csv.mjs 명단.csv          # 미리보기: 컬럼 매핑·건수 확인
 NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
-  node scripts/ingest_wiki_1006.mjs --yes
+  node scripts/ingest_csv.mjs 명단.csv --yes  # 실제 적재
+# 컬럼 자동 감지가 틀리면: --map "name_ko=성명,name_hanja=한자성명,..."
 ```
 
+**경로 B — 위키백과 자동 추출.** 이름·한자·회차만 확보 (생몰년 없음).
+
+```bash
+node scripts/ingest_wiki_1006.mjs             # 미리보기: 추출 수 ~1,006명인지 확인
+node scripts/ingest_wiki_1006.mjs --debug     # 추출이 안 되면 문서 구조 진단
+NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  node scripts/ingest_wiki_1006.mjs --yes     # 실제 적재 (추출 수 이상 시 자동 중단)
+```
+
+두 스크립트 모두 미리보기가 기본이고, upsert라 중복 실행해도 안전하다.
 service role 키는 스크립트 실행에만 쓰고 커밋·배포 환경에 넣지 않는다.
 
 ## 배포 (Vercel + 커스텀 도메인)
