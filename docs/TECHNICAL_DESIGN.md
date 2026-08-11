@@ -1,0 +1,320 @@
+# 기술 설계: 조상 계보 탐색 서비스 (maeguk-search)
+
+기획 메모의 기술 구현 방안. 데이터 현실(한국 계보 데이터의 색인 부재, 세대 갭)을
+전제로 두고, 그 제약 안에서 동작하는 아키텍처를 설계한다.
+
+---
+
+## 0. 설계를 지배하는 3가지 제약
+
+설계 전체가 아래 제약에서 도출되므로 먼저 명시한다.
+
+1. **외부 API는 "검색 엔진"이 아니라 "수급 소스"다.**
+   FamilySearch 한국 족보 컬렉션(collection 1398522, 1200–2014)은 대부분
+   비색인 이미지이고 부분 색인만 존재한다. "이름+부모이름 → 인물 레코드"
+   질의가 실시간으로 성립하지 않는다. 따라서 질의 시점에 외부 API를
+   fan-out하는 구조가 아니라, **가능한 데이터를 로컬 그래프로 적재해 두고
+   로컬에서 매칭하는 구조**여야 한다.
+
+2. **FamilySearch ToS는 대량 복제/영구 저장을 제한한다.**
+   개발자 키 승인 + OAuth가 필요하고, 응답 데이터의 로컬 보존(캐싱)에 제약이
+   있다. FamilySearch는 벌크 적재 대상이 아니라 **질의 시점 보조 소스 +
+   사용자 본인 OAuth 위임 소스**로 취급한다. 벌크 적재 가능한 소스(Wikidata,
+   공공 CSV, 제휴 데이터)와 명확히 분리한다.
+
+3. **탐색 방향을 뒤집을 수 있다.**
+   "사용자 → 조상 방향으로 무한 역추적"은 데이터가 없어 불가능하지만,
+   반대 방향은 가능하다. 친일반민족행위자 1,006명은 **고정된 소규모 루트
+   집합**이므로, 이들의 후손 트리를 미리 계산(전개)해 두면 사용자 질의는
+   "후보 인물이 이 후손 집합에 속하는가"라는 멤버십 검사로 바뀐다.
+   이것이 이 서비스의 핵심 알고리즘 결정이다. (§6)
+
+---
+
+## 1. 전체 아키텍처
+
+```text
+┌─ Frontend ──────────────────────────────────────┐
+│ Next.js (모바일 웹/PWA)                          │
+│  입력 위저드 → 후보 선택 → 결과 시각화(d3/визx)   │
+└───────────────┬─────────────────────────────────┘
+                │ REST + SSE(작업 진행률)
+┌───────────────▼─────────────────────────────────┐
+│ API Server (FastAPI)                             │
+│  /candidates  /lineage/:id/trace  /jobs/:id      │
+└───────┬───────────────────────────┬─────────────┘
+        │ 동기: 로컬 그래프 질의       │ 비동기: 외부 보강
+┌───────▼────────────┐   ┌──────────▼────────────┐
+│ Match Engine        │   │ Worker (큐: pg-boss/  │
+│  blocking → scoring │   │  arq)                 │
+│  → traversal        │   │  FamilySearch 질의    │
+│  → 역인덱스 조회     │   │  보강·재랭킹           │
+└───────┬────────────┘   └──────────┬────────────┘
+        │                           │
+┌───────▼───────────────────────────▼─────────────┐
+│ PostgreSQL                                       │
+│  persons / relationships / clans / sources       │
+│  historical_persons(1,006) / descendant_closure  │
+│  person_links(동일인 클러스터)                    │
+└───────▲─────────────────────────────────────────┘
+        │ 배치 ETL (적재→정규화→링크)
+┌───────┴─────────────────────────────────────────┐
+│ Ingestion Pipeline (Python, 배치)                │
+│  뉴스타파 CSV │ Wikidata SPARQL │ KOSIS │ 제휴족보 │
+└─────────────────────────────────────────────────┘
+```
+
+- **질의 경로(동기)**: 로컬 PostgreSQL 그래프만 조회. p95 수백 ms 목표.
+- **보강 경로(비동기)**: FamilySearch 등 실시간 외부 질의는 잡 큐로 돌리고
+  SSE로 진행률 푸시. FE는 "탐색 중" 상태를 스트리밍으로 갱신.
+
+## 2. 데이터 소스별 수급 전략
+
+| 소스 | 접근 방식 | 로컬 저장 | 역할 |
+|---|---|---|---|
+| 친일반민족행위자 1,006명 (뉴스타파 데이터포털 CSV) | 다운로드 | 전체 | 루트 집합. 결정문 회차·분야 포함 |
+| 위키백과 명단 문서 + Wikidata | SPARQL/덤프 | 전체 | 한자명, 생몰년, 창씨개명명, 가족관계(P22/P25/P40), 이명 |
+| Wikidata 일반 인물 그래프 | SPARQL 배치 | 전체 | 1,006명의 자녀·손 세대 확장 (유명 후손 위주) |
+| KOSIS 성씨·본관 통계 | OpenAPI | 집계 테이블 | 랭킹 prior (해당 성씨·본관의 인구 비중) |
+| FamilySearch Tree/Genealogies API | 질의 시점, 사용자 OAuth | 세션 캐시만(ToS) | 사용자 측 계보 후보 검색, 사용자가 이미 트리를 가진 경우 연결 |
+| 성균관대 족보시스템, 문중 전자족보 | 제휴/크롤 협의 후 | 제휴 조건에 따름 | 2단계. recall의 실질적 해법 |
+
+수급 우선순위: **1,006명 명단의 인물 정보를 최대한 풍부하게** 만드는 것이
+1순위다. 특히 다음 필드가 매칭 품질을 결정한다.
+
+- 한자명 (족보는 한자 기반)
+- **창씨개명명** (일제기 기록·제적부와의 교차 대조에 필수)
+- 이명/자/호/관명 (족보 등재명은 호적명과 다른 경우가 많음)
+- 본관, 출신지, 생몰년
+- 부·자 관계 (위키·결정문에서 추출 → 후손 전개의 시드)
+
+## 3. 데이터 모델 (PostgreSQL)
+
+```sql
+-- 성씨·본관 정규화 테이블
+CREATE TABLE clans (
+  id            serial PRIMARY KEY,
+  surname_ko    text NOT NULL,          -- 김
+  surname_hanja text,                   -- 金
+  bongwan       text,                   -- 김해
+  UNIQUE (surname_ko, bongwan)
+);
+
+-- 인물: 소스에서 온 레코드 단위 (동일인 통합 전)
+CREATE TABLE persons (
+  id            bigserial PRIMARY KEY,
+  name_ko       text,
+  name_hanja    text,
+  alt_names     jsonb DEFAULT '[]',     -- [{type: '자'|'호'|'창씨명'|'족보명', ko, hanja}]
+  sex           char(1),
+  birth_year_lo smallint,               -- 불확실성을 구간으로: [lo, hi]
+  birth_year_hi smallint,
+  death_year    smallint,
+  clan_id       int REFERENCES clans,
+  generation_no smallint,               -- 항렬 세수 (알 경우)
+  hangryeol_char text,                  -- 항렬자
+  region        text,                   -- 정규화된 현대 행정구역 코드
+  source_id     int NOT NULL REFERENCES sources,
+  external_ids  jsonb DEFAULT '{}'      -- {wikidata: 'Q..', fs: '...'}
+);
+
+-- 관계: 방향 있는 부모→자식 간선
+CREATE TABLE relationships (
+  parent_id  bigint REFERENCES persons,
+  child_id   bigint REFERENCES persons,
+  rel_type   text DEFAULT 'bio',        -- bio | adopted(양자, 족보에서 흔함)
+  confidence real NOT NULL,             -- 소스 신뢰도 × 추출 신뢰도
+  source_id  int REFERENCES sources,
+  PRIMARY KEY (parent_id, child_id, source_id)
+);
+
+-- 동일인 클러스터 (entity resolution 결과)
+CREATE TABLE person_links (
+  cluster_id bigint NOT NULL,
+  person_id  bigint REFERENCES persons,
+  score      real,
+  PRIMARY KEY (cluster_id, person_id)
+);
+
+-- 친일행위자: persons 위의 어노테이션
+CREATE TABLE historical_persons (
+  person_id      bigint PRIMARY KEY REFERENCES persons,
+  decision_round smallint,              -- 1기/2기/3기
+  category       text,                  -- 매국·중추원·관료·경찰·문화 등
+  evidence       jsonb,                 -- 결정문 요지, 근거자료 링크
+  UNIQUE (person_id)
+);
+
+-- 역인덱스: 1,006명의 후손 전개 (§6)
+CREATE TABLE descendant_closure (
+  root_id     bigint REFERENCES persons,   -- 친일행위자 노드
+  desc_id     bigint REFERENCES persons,   -- 후손 노드
+  depth       smallint,
+  path        bigint[],                    -- 경로 재구성용
+  confidence  real,                        -- 경로상 간선 confidence 곱
+  PRIMARY KEY (root_id, desc_id)
+);
+
+CREATE TABLE sources (
+  id         serial PRIMARY KEY,
+  kind       text,      -- newstapa | wikidata | familysearch | jokbo | manual
+  title      text,
+  url        text,
+  reliability real      -- 소스 기본 신뢰도
+);
+```
+
+설계 포인트:
+
+- **persons는 "레코드", person_links가 "사람"이다.** 소스마다 같은 인물이
+  다른 이름·표기로 들어오므로 원본 레코드를 보존하고 클러스터로 통합한다.
+  잘못된 병합을 롤백할 수 있어야 하므로 물리 병합은 하지 않는다.
+- **출생연도는 구간**으로 저장한다. 족보엔 간지(갑자년 등)만 있는 경우가
+  많아 60년 모호성이 생기고, 이를 [lo, hi]로 들고 다니며 매칭 시 겹침을
+  본다.
+- 그래프 DB(Neo4j 등)는 도입하지 않는다. 간선 수가 수백만 규모까지는
+  Postgres 재귀 CTE + 역인덱스로 충분하고, 운영 복잡도가 낮다.
+
+## 4. 정규화 파이프라인
+
+한국 계보 데이터 특유의 정규화가 매칭 recall을 좌우한다. ETL 단계에서 처리:
+
+1. **이름**: 한글/한자 분리 저장, 한자 이체자 정규화(예: 靑↔青), 로마자
+   역변환(FamilySearch 레코드는 로마자 표기가 섞임 — McCune-Reischauer와
+   Revised 양쪽에서 한글 후보 생성).
+2. **연도**: 간지→서기 후보 구간, 음력→양력은 연 단위 근사(±1년 허용),
+   단기(檀紀)·일본 연호(昭和 등)→서기 변환.
+3. **지명**: 조선/일제기 행정구역 → 현대 행정구역 매핑 테이블 (예: 경성부→
+   서울). 공개된 행정구역 변천 데이터로 사전 구축.
+4. **본관·성씨**: 이표기 통합(김해/금관가야계 표기 등), KOSIS 코드에 정렬.
+5. **항렬**: 문중별 항렬표(공개된 대성 문중 위주로 수집)를 별도 테이블로
+   두고, 이름에서 항렬자를 검출해 **세대 번호를 추정**한다. 항렬자는 이름
+   동명이인 문제를 뚫는 가장 강한 신호다: 같은 문중에서 항렬자가 확인되면
+   세대 차이를 산술적으로 계산할 수 있어, 중간 세대 기록이 비어 있어도
+   "세대 거리"는 추정 가능하다.
+
+## 5. 매칭 엔진 (Candidate Ranking)
+
+Fellegi–Sunter 계열의 확률적 레코드 링키지로 설계한다.
+
+**Blocking (후보군 축소)** — 전수 비교를 피하기 위한 색인 키:
+
+- (성씨, 본관)
+- (성씨, 출생연도 구간 겹침)
+- (성씨, 항렬자)
+
+**Scoring (feature별 가중 합)**:
+
+| Feature | 비교 방법 | 비고 |
+|---|---|---|
+| 한글명 | 완전/자모 편집거리 | 가중 낮음 (동명이인 밀도) |
+| 한자명 | 완전 일치 | 가중 높음 |
+| 창씨명/이명 | alt_names 교차 | 일제기 기록 연결에 결정적 |
+| 출생연도 | 구간 겹침 + 거리 감쇠 | |
+| 지역 | 행정구역 트리 거리 | |
+| 본관 | 일치 여부 + KOSIS prior | 흔한 본관일수록 증거력 낮음 |
+| 구조 신호 | 부모·형제 후보의 동반 일치 | **가장 중요.** 아래 설명 |
+
+**구조 신호가 핵심이다.** 이름 하나의 일치는 증거력이 거의 없지만
+"본인 이름 + 아버지 이름 + 조부 이름이 같은 부모-자식 체인으로 동시에
+일치"하는 것은 조합 확률이 급감하므로 강한 증거다. 따라서 스코어링은
+개별 인물 단위가 아니라 **입력된 가족 서브그래프 전체를 후보 서브그래프에
+정렬(alignment)하는 문제**로 푼다. 구현은 단순하게: 본인 후보마다 그
+부모 간선을 따라가 부·조부 이름 매칭 점수를 곱산하고, 체인이 길게 성립할
+수록 지수적으로 가점.
+
+**KOSIS prior의 역할**: "김해 김씨 일치"와 "희귀 본관 일치"의 증거력이
+다르다. 각 (성씨, 본관)의 인구 비중을 prior로 넣어, 흔한 조합의 일치는
+디스카운트한다.
+
+각 후보는 최종적으로 0~1 confidence를 갖고, 이 값은 이후 traversal 경로의
+confidence에 곱해져 끝까지 전파된다. **결과는 어디에도 이진 판정으로
+표시하지 않고 경로별 confidence + 근거 필드 목록으로 노출한다.**
+
+## 6. 역방향 인덱스: 후손 전개 (핵심 알고리즘)
+
+사용자→조상 방향 탐색은 3~4세대 만에 데이터가 끊긴다. 대신:
+
+1. **오프라인(배치)**: 1,006명 각각을 루트로, 보유한 relationships 그래프에서
+   **자식 방향으로 BFS 전개**하여 `descendant_closure`를 만든다.
+   - depth 한계: 6세대 (1870년생 루트 기준 대략 현재 세대까지)
+   - confidence 하한: 경로 곱이 임계값(예: 0.2) 미만이면 가지치기
+   - 루트가 1,006개로 고정이라 전개 규모가 유계이고, 데이터가 추가될 때마다
+     증분 재계산하면 된다.
+2. **온라인(질의)**: 사용자 입력 → §5 매칭으로 후보 인물 집합(본인/부/조부
+   후보) 산출 → 각 후보의 cluster_id로 `descendant_closure`를 조회 →
+   히트 시 `path`로 경로 재구성 → 루트(친일행위자)의 evidence와 함께 반환.
+
+이 구조의 효과:
+
+- 질의 시 재귀 탐색이 없다. 인덱스 조인 한 번.
+- "데이터가 끊긴 구간"이 사용자 쪽이 아니라 역사인물 쪽 후손 전개의
+  경계로 이동한다. 즉 커버리지 문제가 **측정 가능**해진다:
+  `descendant_closure`의 세대별 노드 수가 곧 서비스의 실질 커버리지 지표다.
+- 항렬 기반 세대 거리 추정(§4-5)과 결합하면, 중간 세대가 비어도
+  "같은 문중·같은 파·세대 거리 k"라는 약한 연결을 별도 등급으로 제시할 수
+  있다 (단, 이건 '연결'이 아니라 '동일 문중 소속 가능성'으로만 표기).
+
+## 7. API 설계
+
+```text
+POST /api/v1/searches            # 탐색 세션 생성 (가족 정보 입력)
+  → 202 { search_id, status: 'matching' }
+GET  /api/v1/searches/:id/events # SSE: 단계별 진행 (matching→enrich→done)
+GET  /api/v1/searches/:id        # 현재 상태 + 후보 목록
+POST /api/v1/searches/:id/refine # 후보 선택/추가 정보 입력 → 재랭킹
+GET  /api/v1/searches/:id/result # 경로·근거·시각화용 그래프 JSON
+```
+
+- 로컬 그래프 매칭은 동기(수백 ms), FamilySearch 보강은 워커에서 비동기로
+  수행하고 SSE로 후보 목록을 갱신한다.
+- **저장 정책**: 탐색 세션은 서버에 영속 저장하지 않는다. TTL(예: 24h)
+  Redis/DB row 후 파기. 결과 공유 URL 기능은 만들지 않는다(악용 방지 겸
+  개인정보 보존 최소화).
+- rate limit: IP·세션당 탐색 횟수 제한 (타인 이름 대량 조회 억제).
+
+## 8. 기술 스택
+
+| 레이어 | 선택 | 이유 |
+|---|---|---|
+| FE | Next.js (App Router, PWA) | 기획안 유지 |
+| 시각화 | d3 (force/tree layout) | 경로 그래프 렌더 |
+| BE API | **Python FastAPI** | 매칭·ETL과 언어 통일, pydantic 스키마 |
+| 매칭/ETL | Python (pandas, rapidfuzz, jamo) | 레코드 링키지 생태계 |
+| DB | PostgreSQL 16 (+ pg_trgm, unaccent) | 재귀 CTE, trigram 이름 검색 |
+| 큐 | arq(Redis) 또는 pg-boss 계열 | 비동기 보강 |
+| 인프라 | 단일 VM/컨테이너로 시작 | PoC 규모에서 분산 불필요 |
+
+BE를 Node로 통일하는 안도 가능하지만, 이 서비스의 난이도는 API 서버가
+아니라 **데이터 파이프라인과 매칭**에 있으므로 Python으로 무게를 싣는 것을
+추천.
+
+## 9. 구현 순서 (스파이크 → MVP)
+
+**Phase 0 — 데이터 스파이크 (앱 코드 작성 전, ~1주)**
+
+1. 뉴스타파 1,006명 CSV 적재 + Wikidata 크로스매핑 스크립트
+   → 한자명/생몰년/가족관계 커버리지 리포트 (몇 %가 자녀 정보를 갖는가?)
+2. FamilySearch 개발자 키 발급 → Tree Person Search로 실존 샘플 20~30명
+   recall 측정 스크립트 (결과를 `docs/spike-results.md`에 기록)
+3. Wikidata에서 1,006명의 후손 전개 시도 → `descendant_closure` 프로토타입
+   → **세대별 도달 인원 수치**가 이 서비스의 성립 가능성 지표
+
+Phase 0의 수치가 나쁘면(후손 전개가 2세대에서 끊기면) 제휴 데이터 없이는
+매칭 서비스가 성립하지 않는다는 뜻이고, 그 경우 인물·기록 탐색 서비스로
+범위를 조정한 뒤 데이터를 확보하며 확장하는 경로를 탄다.
+
+**Phase 1 — 매칭 코어**: 스키마 + ETL + blocking/scoring + 역인덱스, CLI로
+검증. **Phase 2 — API + FE 위저드**. **Phase 3 — FamilySearch 비동기 보강,
+항렬 테이블 확충, 제휴 데이터 커넥터.**
+
+## 10. 악용·오류 완화 장치 (구현 관점 최소 세트)
+
+법적 검토와 별개로, 코드 레벨에서 기본 탑재할 것:
+
+- 첫 화면 고지(본인·직계 가족 외 조회 금지) + 체크박스 동의
+- 탐색 세션 비영속(TTL 파기), 공유 URL 미제공, 결과 페이지 noindex
+- IP/디바이스당 탐색 횟수 제한 및 동일 이름 조합 반복 조회 탐지
+- 모든 결과 화면에 confidence와 근거 소스 명시, 이진 판정 문구 금지
+  ("~입니다"가 아니라 "N개 후보 중 M개가 연결 기록 존재")
+- 입력값(가족 이름) 로그 미저장 — 로그에는 해시만
