@@ -17,8 +17,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { writeFileSync } from 'node:fs';
 
-const PAGE = process.argv.find((a) => a.startsWith('--page='))?.slice(7)
-  ?? '대한민국 정부 발표 친일반민족행위자 명단';
+// 1,006명은 우산 문서가 아니라 회차별 별도 문서 3개에 나뉘어 있다 (106+195+705=1,006)
+const DEFAULT_PAGES = [
+  { page: '친일반민족행위 106인 명단', round: 1 },
+  { page: '친일반민족행위 195인 명단', round: 2 },
+  { page: '친일반민족행위 705인 명단', round: 3 },
+];
+const pageOverride = process.argv.find((a) => a.startsWith('--page='))?.slice(7);
+const PAGES = pageOverride ? [{ page: pageOverride, round: null }] : DEFAULT_PAGES;
 const WRITE = process.argv.includes('--yes');
 const DEBUG = process.argv.includes('--debug');
 const DUMP = process.argv.includes('--dump');
@@ -139,37 +145,43 @@ export function dedupe(entries) {
 }
 
 async function main() {
-  console.log(`위키 문서 가져오는 중… (${PAGE})`);
-  const wikitext = await fetchWikitext(PAGE);
-
-  if (DUMP) {
-    writeFileSync('wikitext_dump.txt', wikitext);
-    console.log(`wikitext ${wikitext.length}자를 wikitext_dump.txt 에 저장했습니다.`);
-  }
-
-  const sections = splitRounds(wikitext);
-
-  if (DEBUG) {
-    console.log(`\n[진단] wikitext 길이: ${wikitext.length}자, 섹션 ${sections.length}개`);
-    for (const s of sections) {
-      const names = extractNames(s.body);
-      console.log(
-        `  - "${s.title}" (round=${s.round ?? '?'}): ${s.body.length}자, 추출 ${names.length}명`,
-      );
-    }
-    const biggest = sections.reduce((a, b) => (b.body.length > a.body.length ? b : a));
-    console.log(`\n[진단] 최대 섹션 "${biggest.title}" 앞부분 800자:\n`);
-    console.log(biggest.body.slice(0, 800));
-    console.log('\n');
-  }
-
   const all = [];
-  for (const s of sections) {
-    // 회차가 특정되기 전(서두)이거나 비명단 섹션이면 건너뜀 — 산문 속 인물 링크 오탐 방지
-    if (!s.round || SKIP_SECTIONS.test(s.title)) continue;
-    for (const n of extractNames(s.body)) {
-      all.push({ ...n, decision_round: s.round });
+  for (const { page, round } of PAGES) {
+    console.log(`위키 문서 가져오는 중… (${page})`);
+    const wikitext = await fetchWikitext(page);
+
+    if (DUMP) {
+      const f = `wikitext_dump_${round ?? 'x'}.txt`;
+      writeFileSync(f, wikitext);
+      console.log(`wikitext ${wikitext.length}자를 ${f} 에 저장했습니다.`);
     }
+
+    const sections = splitRounds(wikitext);
+
+    if (DEBUG) {
+      console.log(`[진단] "${page}": ${wikitext.length}자, 섹션 ${sections.length}개`);
+      for (const s of sections) {
+        console.log(
+          `  - "${s.title}": ${s.body.length}자, 추출 ${extractNames(s.body).length}명`,
+        );
+      }
+      const biggest = sections.reduce((a, b) => (b.body.length > a.body.length ? b : a));
+      console.log(`\n[진단] 최대 섹션 "${biggest.title}" 앞부분 800자:\n`);
+      console.log(biggest.body.slice(0, 800));
+      console.log('\n');
+    }
+
+    let pageCount = 0;
+    for (const s of sections) {
+      // 서두와 부록류 섹션은 건너뜀 — 산문 속 인물 링크 오탐 방지
+      if (s.title === '(intro)' || SKIP_SECTIONS.test(s.title)) continue;
+      for (const n of extractNames(s.body)) {
+        // 회차는 문서 단위로 확정 (문서 내 헤딩에서 감지되면 그 값 우선)
+        all.push({ ...n, decision_round: s.round ?? round });
+        pageCount++;
+      }
+    }
+    console.log(`  → ${pageCount}명 추출 (중복 제거 전)`);
   }
   const people = dedupe(all);
 
@@ -209,7 +221,10 @@ async function main() {
     name_hanja: p.name_hanja,
     decision_round: p.decision_round,
     list_tags: ['gov1006'],
-    evidence_url: `https://ko.wikipedia.org/wiki/${encodeURIComponent(PAGE)}`,
+    evidence_url: (() => {
+      const src = DEFAULT_PAGES.find((d) => d.round === p.decision_round)?.page ?? PAGES[0].page;
+      return `https://ko.wikipedia.org/wiki/${encodeURIComponent(src)}`;
+    })(),
     data_source: 'wiki_ingest',
   }));
 
