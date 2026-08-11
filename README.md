@@ -1,0 +1,59 @@
+# 매국서치 (maeguk-search)
+
+사용자가 입력한 조상 성명이 **친일반민족행위진상규명위원회 결정 명단(1,006명)**
+기록과 일치할 수 있는 경우의 수가 있는지 대조하는 서비스의 MVP.
+
+- 판정 서비스가 아니다. 응답에 `verdict` 필드는 항상 `null`이며, 결과는
+  "일치 가능한 기록 N건"이라는 집계로만 표현한다.
+- 설계 문서: [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md)
+
+## 구성
+
+- **FE/BE**: Next.js 15 (App Router) 단일 앱 — `app/page.tsx` 입력 위저드,
+  `app/api/search/route.ts` 매칭 API
+- **DB**: Supabase (프로젝트 `maeguk-search`, ref: `vjcyzuionucesmizhffp`,
+  ap-northeast-2) — 스키마 사본은 `supabase/migrations/`
+- **매칭**: pg_trgm RPC(`search_persons`)로 후보를 뽑고 `lib/match.ts`에서
+  한자·출생연대 가중 스코어링
+
+## 로컬 실행
+
+```bash
+cp .env.example .env.local   # 키 채우기 (Supabase 대시보드 → Settings → API)
+npm install
+npm run dev
+```
+
+## 데이터 적재
+
+현재 DB에는 검증된 대표 인물 21명(seed_sample)만 들어 있다. 전체 명단 적재는
+일반 인터넷이 되는 로컬에서:
+
+```bash
+# 1) 미리보기 (쓰기 없음) — 추출 수가 ~1,006명인지 확인
+node scripts/ingest_wiki_1006.mjs
+
+# 2) 실제 적재
+NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  node scripts/ingest_wiki_1006.mjs --yes
+```
+
+service role 키는 스크립트 실행에만 쓰고 커밋·배포 환경에 넣지 않는다.
+
+## 배포 (Vercel + 커스텀 도메인)
+
+1. Vercel에서 이 저장소 import → Framework: Next.js (자동 감지)
+2. 환경변수 등록: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   (publishable key. service role 키는 절대 등록하지 않는다)
+3. Vercel 프로젝트 → Settings → Domains에서 커스텀 도메인 추가 →
+   안내에 따라 도메인 등록기관에서 A 레코드(`76.76.21.21`) 또는
+   CNAME(`cname.vercel-dns.com`) 설정
+4. 전체 페이지에 `X-Robots-Tag: noindex` 헤더가 적용되어 있음
+   (`next.config.mjs`) — 결과 화면 색인 차단
+
+## 운영 원칙 (코드에 반영된 것)
+
+- 입력 성명 저장·로깅 없음 (`app/api/search/route.ts`)
+- 이용 동의(`consent`) 없이는 API가 거부
+- IP당 시간당 20회 레이트리밋 (베스트에포트)
+- 커버리지 배너: 적재 인원이 1,006명 미만이면 "매핑 없음 ≠ 무관함"을 명시
