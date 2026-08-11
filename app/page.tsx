@@ -165,6 +165,12 @@ export default function Home() {
 
           <div className="card">
             <h2>조상 정보 입력 <span className="opt" style={{ fontWeight: 400, fontSize: 13 }}>(아는 만큼만, 최소 1명)</span></h2>
+            <p style={{ fontSize: 13, color: 'var(--sub)', marginTop: 4 }}>
+              한자·출생연대까지 입력하면 정확도가 크게 올라갑니다.{' '}
+              <a href="/guide" style={{ color: 'var(--accent)' }}>
+                조상 한자명·본관 찾는 법 →
+              </a>
+            </p>
             {RELATIONS.map((rel) => (
               <div key={rel} className="ancestor-row">
                 <div className="ancestor-label">{rel}</div>
