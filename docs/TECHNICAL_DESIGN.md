@@ -3,12 +3,14 @@
 기획 메모의 기술 구현 방안. 데이터 현실(한국 계보 데이터의 색인 부재, 세대 갭)을
 전제로 두고, 그 제약 안에서 동작하는 아키텍처를 설계한다.
 
-> **구현 현황 (2026-08)**: 조상 직접 입력 모드(§1-1) 기준 MVP 구현 완료.
-> Next.js 앱 + Supabase(historical_persons, search_persons RPC), 정부 확정
-> 1,006명 명단 적재(1,007행: 실제 동명이인 이완용 2인 포함), Tier 2(708인)·
-> 독립유공자·Wikidata 생몰년 보강은 scripts/ 로 적재 가능. verdict 없는
-> 경우의 수 응답, 미저장·noindex·레이트리밋 등 §10 원칙 코드 반영.
-> 미구현: descendant_closure(§3-1), homonym_pool 산정(근현대인물자료 적재 필요).
+> **구현 현황 (2026-08)**: 가족 체인 입력(부친~고조부) + 후손 branch 매칭까지
+> 구현 완료. Next.js 앱 + Supabase(historical_persons / persons /
+> relationships / descendant_links, search_persons·search_descendants RPC).
+> 정부 확정 1,006명 적재, §5 구조 신호(부자 체인 정렬 가점)와 §6 역인덱스
+> (경로 포함 descendant_links), §3-1 출생 1930년 컷오프 모두 코드 반영.
+> 후손 계보 데이터는 scripts/build_closure_wikidata.mjs 로 구축(현재 데모
+> 시드만 적재)하며, 커버리지는 결과 화면에 상시 표시된다.
+> 미구현: homonym_pool 산정(근현대인물자료 적재 필요), 족보 큐레이션 워크벤치.
 
 ---
 
