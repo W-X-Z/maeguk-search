@@ -254,6 +254,21 @@ async function main() {
     console.log(`적재 ${Math.min(i + 200, rows.length)}/${rows.length}`);
   }
 
+  // 시드(생몰년·요약 보유)와 이름+한자가 같은 위키 행은 중복이므로 제거 (시드 우선)
+  const { data: seeds } = await db
+    .from('historical_persons')
+    .select('name_ko, name_hanja')
+    .eq('data_source', 'seed_sample');
+  for (const s of seeds ?? []) {
+    if (!s.name_hanja) continue;
+    await db
+      .from('historical_persons')
+      .delete()
+      .eq('data_source', 'wiki_ingest')
+      .eq('name_ko', s.name_ko)
+      .eq('name_hanja', s.name_hanja);
+  }
+
   const { count } = await db
     .from('historical_persons')
     .select('*', { count: 'exact', head: true });

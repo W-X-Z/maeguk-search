@@ -172,6 +172,22 @@ async function main() {
     console.log(`적재 ${Math.min(i + 200, dataRows.length)}/${dataRows.length}`);
   }
 
+  // CSV(생몰년 포함)와 이름+한자가 같은 시드/위키 행은 중복이므로 제거 (CSV 우선)
+  const { data: existing } = await db
+    .from('historical_persons')
+    .select('name_ko, name_hanja')
+    .in('data_source', ['seed_sample', 'wiki_ingest']);
+  const csvKeys = new Set(dataRows.map((p) => `${p.name_ko}|${p.name_hanja ?? ''}`));
+  for (const e of existing ?? []) {
+    if (!e.name_hanja || !csvKeys.has(`${e.name_ko}|${e.name_hanja}`)) continue;
+    await db
+      .from('historical_persons')
+      .delete()
+      .in('data_source', ['seed_sample', 'wiki_ingest'])
+      .eq('name_ko', e.name_ko)
+      .eq('name_hanja', e.name_hanja);
+  }
+
   const { count } = await db.from('historical_persons').select('*', { count: 'exact', head: true });
   await db.from('dataset_meta').upsert({
     key: 'coverage',
