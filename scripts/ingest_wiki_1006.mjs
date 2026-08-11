@@ -237,6 +237,7 @@ async function main() {
     name_ko: p.name_ko,
     name_hanja: p.name_hanja,
     decision_round: p.decision_round,
+    list_key: 'gov1006',
     list_tags: ['gov1006'],
     evidence_url: (() => {
       const src = DEFAULT_PAGES.find((d) => d.round === p.decision_round)?.page ?? PAGES[0].page;
@@ -249,7 +250,7 @@ async function main() {
     const chunk = rows.slice(i, i + 200);
     const { error } = await db
       .from('historical_persons')
-      .upsert(chunk, { onConflict: 'name_ko,name_hanja,birth_year', ignoreDuplicates: true });
+      .upsert(chunk, { onConflict: 'name_ko,name_hanja,birth_year,list_key', ignoreDuplicates: true });
     if (error) throw new Error(`적재 실패 (${i}~): ${error.message}`);
     console.log(`적재 ${Math.min(i + 200, rows.length)}/${rows.length}`);
   }
@@ -265,13 +266,15 @@ async function main() {
       .from('historical_persons')
       .delete()
       .eq('data_source', 'wiki_ingest')
+      .eq('list_key', 'gov1006')
       .eq('name_ko', s.name_ko)
       .eq('name_hanja', s.name_hanja);
   }
 
   const { count } = await db
     .from('historical_persons')
-    .select('*', { count: 'exact', head: true });
+    .select('*', { count: 'exact', head: true })
+    .eq('list_key', 'gov1006');
   await db.from('dataset_meta').upsert({
     key: 'coverage',
     value: {

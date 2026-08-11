@@ -51,6 +51,20 @@ NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
 두 스크립트 모두 미리보기가 기본이고, upsert라 중복 실행해도 안전하다.
 service role 키는 스크립트 실행에만 쓰고 커밋·배포 환경에 넣지 않는다.
 
+**추가 명단 (모두 미리보기 → --yes 패턴):**
+
+```bash
+# Tier 2: 친일파 708인 명단 (위키 하위 문서 자동 발견) — 결과 화면에 분리 표시됨
+node scripts/ingest_wiki_708.mjs
+
+# 교차 참조: 국가보훈부 독립유공자 명단
+# 공공데이터포털에서 "국가보훈부_독립유공자 명단" CSV를 받은 뒤:
+node scripts/ingest_csv.mjs 독립유공자.csv --tag=independence
+
+# 생몰년 보강: Wikidata 대조 (모호한 경우는 건너뛰는 보수적 적용)
+node scripts/enrich_wikidata.mjs
+```
+
 ## 배포 (Vercel + 커스텀 도메인)
 
 1. Vercel에서 이 저장소 import → Framework: Next.js (자동 감지)

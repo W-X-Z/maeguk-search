@@ -75,18 +75,17 @@ export async function POST(req: NextRequest) {
     (rpcRes.data ?? []) as PersonRow[],
   );
 
-  const direct = mappings.filter((m) => m.list_tags.includes('gov1006'));
-  const other = mappings.filter((m) => !m.list_tags.includes('gov1006'));
+  const byTag = (tag: string) => mappings.filter((m) => m.list_tags.includes(tag));
 
   return NextResponse.json({
     input_echo: { name: trimmedName, hanja: trimmedHanja ?? null, birth_era: era ?? null },
     // 근현대인물자료 미적재 단계라 동명이인 풀 산정 불가 — null로 정직하게 표기 (설계 §1-1)
     homonym_pool: null,
     mappings: {
-      chinil_direct: direct,
-      chinil_other_lists: other,
+      chinil_direct: byTag('gov1006'), // Tier 1: 정부 확정 명단
+      chinil_other_lists: byTag('assembly708'), // Tier 2: 국회·광복회 발표 명단
       chinil_descendant: [], // descendant_closure 미구축 단계
-      independence_activist: [], // 교차 참조 미구축 단계
+      independence_activist: byTag('independence'), // 교차 참조
     },
     coverage: metaRes.data?.value ?? null,
     verdict: null, // 항상 null — 판정 필드를 두지 않는다

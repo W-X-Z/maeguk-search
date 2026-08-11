@@ -11,12 +11,18 @@
  *
  * 컬럼 자동 감지가 틀리면 수동 매핑:
  *   node scripts/ingest_csv.mjs 명단.csv --map "name_ko=성명,name_hanja=한자성명,birth_year=출생년도"
+ *
+ * 다른 명단 적재 (분리 집계용 태그):
+ *   --tag=assembly708    # 친일파 708인 명단 (2002 국회·광복회)
+ *   --tag=independence   # 국가보훈부 독립유공자 명단 (교차 참조용)
  */
 
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 
 const WRITE = process.argv.includes('--yes');
+const TAG = process.argv.find((a) => a.startsWith('--tag='))?.slice(6) ?? 'gov1006';
+const VALID_TAGS = ['gov1006', 'assembly708', 'independence'];
 
 /** 따옴표 처리를 포함한 최소 CSV 파서 */
 export function parseCsv(text) {
@@ -57,7 +63,7 @@ const FIELD_CANDIDATES = {
   birth_year: ['출생년', '출생연도', '생년', '출생', 'birth'],
   death_year: ['사망년', '사망연도', '몰년', '사망', 'death'],
   decision_round: ['기수', '회차', '결정회차', '차수', 'round'],
-  category: ['분야', '부문', '유형', '직역', 'category'],
+  category: ['분야', '부문', '유형', '직역', '훈격', '운동계열', '계열', 'category'],
   summary: ['행적', '주요행적', '비고', '설명', 'summary'],
 };
 
@@ -96,9 +102,14 @@ function toRound(v) {
 async function main() {
   const file = process.argv[2];
   if (!file || file.startsWith('--')) {
-    console.error('사용법: node scripts/ingest_csv.mjs <파일.csv> [--yes] [--map "..."]');
+    console.error('사용법: node scripts/ingest_csv.mjs <파일.csv> [--yes] [--map "..."] [--tag=...]');
     process.exit(1);
   }
+  if (!VALID_TAGS.includes(TAG)) {
+    console.error(`--tag 값은 ${VALID_TAGS.join(' | ')} 중 하나여야 합니다.`);
+    process.exit(1);
+  }
+  console.log(`적재 대상 명단: ${TAG}`);
   const text = readFileSync(file, 'utf8').replace(/^﻿/, '');
   const rows = parseCsv(text);
   if (rows.length < 2) throw new Error('CSV에 데이터가 없습니다.');
@@ -159,23 +170,26 @@ async function main() {
 
   const dataRows = people.map((p) => ({
     ...p,
-    list_tags: ['gov1006'],
-    data_source: 'newstapa_csv',
+    list_key: TAG,
+    list_tags: [TAG],
+    data_source: 'csv_ingest',
   }));
 
   for (let i = 0; i < dataRows.length; i += 200) {
     const chunk = dataRows.slice(i, i + 200);
     const { error } = await db
       .from('historical_persons')
-      .upsert(chunk, { onConflict: 'name_ko,name_hanja,birth_year', ignoreDuplicates: true });
+      .upsert(chunk, { onConflict: 'name_ko,name_hanja,birth_year,list_key', ignoreDuplicates: true });
     if (error) throw new Error(`적재 실패 (${i}~): ${error.message}`);
     console.log(`적재 ${Math.min(i + 200, dataRows.length)}/${dataRows.length}`);
   }
 
-  // CSV(생몰년 포함)와 이름+한자가 같은 시드/위키 행은 중복이므로 제거 (CSV 우선)
+  // 같은 명단(list_key) 안에서 CSV(생몰년 포함)와 이름+한자가 같은
+  // 시드/위키 행은 중복이므로 제거 (CSV 우선). 다른 명단의 행은 건드리지 않는다.
   const { data: existing } = await db
     .from('historical_persons')
     .select('name_ko, name_hanja')
+    .eq('list_key', TAG)
     .in('data_source', ['seed_sample', 'wiki_ingest']);
   const csvKeys = new Set(dataRows.map((p) => `${p.name_ko}|${p.name_hanja ?? ''}`));
   for (const e of existing ?? []) {
@@ -183,23 +197,29 @@ async function main() {
     await db
       .from('historical_persons')
       .delete()
+      .eq('list_key', TAG)
       .in('data_source', ['seed_sample', 'wiki_ingest'])
       .eq('name_ko', e.name_ko)
       .eq('name_hanja', e.name_hanja);
   }
 
-  const { count } = await db.from('historical_persons').select('*', { count: 'exact', head: true });
-  await db.from('dataset_meta').upsert({
-    key: 'coverage',
-    value: {
-      total_official: 1006,
-      loaded: count ?? dataRows.length,
-      stage: 'csv_ingest',
-      note: 'CSV 명단 적재 완료.',
-    },
-    updated_at: new Date().toISOString(),
-  });
-  console.log(`완료. historical_persons 총 ${count}건.`);
+  const { count } = await db
+    .from('historical_persons')
+    .select('*', { count: 'exact', head: true })
+    .eq('list_key', TAG);
+  if (TAG === 'gov1006') {
+    await db.from('dataset_meta').upsert({
+      key: 'coverage',
+      value: {
+        total_official: 1006,
+        loaded: count ?? dataRows.length,
+        stage: 'csv_ingest',
+        note: 'CSV 명단 적재 완료.',
+      },
+      updated_at: new Date().toISOString(),
+    });
+  }
+  console.log(`완료. ${TAG} 명단 총 ${count}건.`);
 }
 
 const isDirectRun = process.argv[1]?.endsWith('ingest_csv.mjs');

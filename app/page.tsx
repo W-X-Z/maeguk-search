@@ -68,6 +68,48 @@ export default function Home() {
   }
 
   const direct = result?.mappings.chinil_direct ?? [];
+  const other = result?.mappings.chinil_other_lists ?? [];
+  const indep = result?.mappings.independence_activist ?? [];
+
+  function MatchCard({ m }: { m: Mapping }) {
+    return (
+      <div className={`match ${m.grade}`}>
+        <div className="name">
+          {m.person.name_ko}
+          {m.person.name_hanja ? `(${m.person.name_hanja})` : ''}
+        </div>
+        <div className="meta">
+          {m.person.birth_year ?? '?'}–{m.person.death_year ?? '?'}
+          {m.person.category ? ` · ${m.person.category}` : ''}
+          {m.person.decision_round ? ` · 제${m.person.decision_round}기 결정` : ''}
+        </div>
+        {m.person.summary && <div style={{ fontSize: 14 }}>{m.person.summary}</div>}
+        <div className="tags">
+          {m.match_fields.map((f) => (
+            <span key={f} className="tag hit">
+              {f}
+            </span>
+          ))}
+          {m.conflicts.map((c) => (
+            <span key={c} className="tag conflict">
+              {c}
+            </span>
+          ))}
+        </div>
+        <div className="confbar">
+          <div style={{ width: `${Math.round(m.confidence * 100)}%` }} />
+        </div>
+        <div className="conflabel">
+          기록 일치 가능성 {Math.round(m.confidence * 100)}% — 동일인 여부 판정 아님
+        </div>
+        {m.person.evidence_url && (
+          <a href={m.person.evidence_url} target="_blank" rel="noreferrer">
+            근거 자료 보기 →
+          </a>
+        )}
+      </div>
+    );
+  }
 
   return (
     <main>
@@ -151,6 +193,7 @@ export default function Home() {
 
           <div className="headline">
             매핑되는 경우의 수: <span className="num">{direct.length}건</span>
+            <span style={{ fontSize: 14, fontWeight: 400 }}> (정부 확정 명단 기준)</span>
           </div>
           <div className="subline">
             입력({result.input_echo.name}
@@ -163,58 +206,54 @@ export default function Home() {
 
           {direct.length === 0 && (
             <div className="card empty">
-              현재 적재된 기록 중에는 입력과 일치 가능한 경우가 없습니다.
+              정부 확정 명단(1,006명) 기록 중에는 입력과 일치 가능한 경우가 없습니다.
               <br />
               (적재 범위 밖 인물과는 대조되지 않았습니다)
             </div>
           )}
 
           {direct.map((m, i) => (
-            <div key={i} className={`match ${m.grade}`}>
-              <div className="name">
-                {m.person.name_ko}
-                {m.person.name_hanja ? `(${m.person.name_hanja})` : ''}
-              </div>
-              <div className="meta">
-                {m.person.birth_year ?? '?'}–{m.person.death_year ?? '?'}
-                {m.person.category ? ` · ${m.person.category}` : ''}
-                {m.person.decision_round ? ` · 제${m.person.decision_round}기 결정` : ''}
-              </div>
-              {m.person.summary && <div style={{ fontSize: 14 }}>{m.person.summary}</div>}
-              <div className="tags">
-                {m.match_fields.map((f) => (
-                  <span key={f} className="tag hit">
-                    {f}
-                  </span>
-                ))}
-                {m.conflicts.map((c) => (
-                  <span key={c} className="tag conflict">
-                    {c}
-                  </span>
-                ))}
-              </div>
-              <div className="confbar">
-                <div style={{ width: `${Math.round(m.confidence * 100)}%` }} />
-              </div>
-              <div className="conflabel">
-                기록 일치 가능성 {Math.round(m.confidence * 100)}% — 동일인 여부 판정 아님
-              </div>
-              {m.person.evidence_url && (
-                <a href={m.person.evidence_url} target="_blank" rel="noreferrer">
-                  근거 자료 보기 →
-                </a>
-              )}
-            </div>
+            <MatchCard key={`d${i}`} m={m} />
           ))}
+
+          {other.length > 0 && (
+            <>
+              <div className="headline" style={{ marginTop: 24 }}>
+                그 외 공개 명단: <span className="num">{other.length}건</span>
+              </div>
+              <div className="subline">
+                친일파 708인 명단(2002, 국회 민족정기모임·광복회 발표)과의 대조 결과입니다. 법적
+                절차로 확정된 정부 명단과는 성격이 다른 공적 발표 자료입니다.
+              </div>
+              {other.map((m, i) => (
+                <MatchCard key={`o${i}`} m={m} />
+              ))}
+            </>
+          )}
+
+          {indep.length > 0 && (
+            <>
+              <div className="headline" style={{ marginTop: 24 }}>
+                독립유공자 명단 매핑: <span className="num">{indep.length}건</span>
+              </div>
+              <div className="subline">
+                같은 성명이 국가보훈부 독립유공자 명단과도 일치합니다. 동명이인 가능성을 함께
+                보여주는 교차 참조입니다.
+              </div>
+              {indep.map((m, i) => (
+                <MatchCard key={`i${i}`} m={m} />
+              ))}
+            </>
+          )}
 
           <button className="ghost" onClick={() => setResult(null)}>
             다시 조회하기
           </button>
 
           <footer className="caveat">
-            이 서비스는 친일반민족행위진상규명위원회가 법적 절차에 따라 결정한 1,006명 명단(공개
-            자료)과의 성명 대조 결과만 제공합니다. 어떤 개인에 대한 사실 판정도 하지 않으며, 결과
-            화면은 검색엔진에 색인되지 않고 조회 내용은 저장되지 않습니다.
+            이 서비스는 공개된 명단 자료와의 성명 대조 결과만 제공합니다. 어떤 개인에 대한 사실
+            판정도 하지 않으며, 결과 화면은 검색엔진에 색인되지 않고 조회 내용은 저장되지
+            않습니다. <a href="/about" style={{ color: 'var(--accent)' }}>데이터 출처와 원칙 →</a>
           </footer>
         </>
       )}
